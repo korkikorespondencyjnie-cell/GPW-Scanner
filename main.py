@@ -43,8 +43,6 @@ def main():
             print(f" • Punkt Zwrotny P2: {rep['p2']:.2f} PLN | P1: {rep['p1']:.2f} PLN")
             print(f" • Czas od P1: {rep['days']} sesji | Zmiana ceny od P1: {rep['change']:+.2f}%")
             print(f" • Faza Dowa: {rep['faza']}")
-            print("\n Profile Cenowy P2 -> P1:")
-            print(rep['chart'])
             print("-" * 60)
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ obliczanie wskaźnika S_D oraz fazy trendu.
 
 import numpy as np
 import pandas as pd
-from config import RSI_WEIGHTS, HALF_LIFE_DAYS
+from config import RSI_WEIGHTS, HALF_LIFE_DAYS, WINDOW_PIVOT
 
 def calc_rsi_series(prices: pd.Series, window: int) -> pd.Series:
     delta = prices.diff()
@@ -35,6 +35,59 @@ def get_extrema_with_rsi(high_low_series: pd.Series, rsi_series: pd.Series, mode
                 
     return extrema_idx, extrema_price, extrema_rsi
 
+def _merge_extrema_to_pivots(idx_l, p_l, rsi_l, idx_h, p_h, rsi_h) -> list:
+    pivots = []
+    for i, p, r in zip(idx_l, p_l, rsi_l):
+        pivots.append({'idx': i, 'type': 'L', 'price': p, 'rsi': r})
+    for i, p, r in zip(idx_h, p_h, rsi_h):
+        pivots.append({'idx': i, 'type': 'H', 'price': p, 'rsi': r})
+    pivots.sort(key=lambda x: x['idx'])
+    return pivots
+
+def build_raw_pivots(lows: pd.Series, highs: pd.Series, rsi_series: pd.Series, window: int = WINDOW_PIVOT) -> list:
+    """Zwraca chronologiczną listę wszystkich pivotów L/H bez filtra Dowa."""
+    idx_l, p_l, rsi_l = get_extrema_with_rsi(lows, rsi_series, mode='low', window=window)
+    idx_h, p_h, rsi_h = get_extrema_with_rsi(highs, rsi_series, mode='high', window=window)
+    return _merge_extrema_to_pivots(idx_l, p_l, rsi_l, idx_h, p_h, rsi_h)
+
+def build_strict_dow_pivots(lows: pd.Series, highs: pd.Series, rsi_series: pd.Series, window: int = WINDOW_PIVOT) -> list:
+    """Wyznacza sekwencję punktów zwrotnych Dowa z ścisłą naprzemiennością L-H-L-H."""
+    pivots = build_raw_pivots(lows, highs, rsi_series, window=window)
+
+    filtered = []
+    for p in pivots:
+        if not filtered:
+            filtered.append(p)
+            continue
+        last = filtered[-1]
+        if last['type'] != p['type']:
+            filtered.append(p)
+        elif p['type'] == 'L' and p['price'] < last['price']:
+            filtered[-1] = p
+        elif p['type'] == 'H' and p['price'] > last['price']:
+            filtered[-1] = p
+
+    return filtered
+
+def detect_bullish_divergences(pivots: list, rsi_series: pd.Series) -> list:
+    """Wykrywa bycze dywergencje na podstawie kolejnych dołków w sekwencji pivotów."""
+    lows = [p for p in pivots if p['type'] == 'L']
+    divs = []
+
+    for i in range(1, len(lows)):
+        p2, p1 = lows[i - 1], lows[i]
+        r2 = rsi_series.iloc[p2['idx']]
+        r1 = rsi_series.iloc[p1['idx']]
+        if p1['price'] < p2['price'] and r1 > r2:
+            divs.append({
+                'p1_idx': p1['idx'],
+                'p1_price': p1['price'],
+                'p2_idx': p2['idx'],
+                'p2_price': p2['price'],
+            })
+
+    return divs
+
 def determine_dow_phase(p_l: list, p_h: list, vol_diff_pct: float) -> str:
     if len(p_l) < 2 or len(p_h) < 2:
         return "Brak danych"
@@ -51,33 +104,6 @@ def determine_dow_phase(p_l: list, p_h: list, vol_diff_pct: float) -> str:
     elif l1 <= l2 and h1 > h2:
         return "Dystrybucja / Słabość"
     return "Konsolidacja"
-
-def generate_ascii_chart(prices: pd.Series, idx_p2: int, idx_p1: int, p2_val: float, p1_val: float, width: int = 40, height: int = 8) -> str:
-    sub_prices = prices.iloc[idx_p2:idx_p1+1].values
-    if len(sub_prices) < 2:
-        return "Niewystarczająca liczba punktów do wykresu."
-    
-    min_p, max_p = min(sub_prices), max(sub_prices)
-    rng = max_p - min_p if max_p != min_p else 1.0
-    
-    chart = [[" " for _ in range(width)] for _ in range(height)]
-    
-    for x in range(width):
-        data_idx = int(x * (len(sub_prices) - 1) / (width - 1))
-        val = sub_prices[data_idx]
-        raw_y = int((val - min_p) / rng * (height - 1))
-        y = height - 1 - max(0, min(raw_y, height - 1))
-        chart[y][x] = "•"
-        
-    y_p2 = height - 1 - max(0, min(int((p2_val - min_p) / rng * (height - 1)), height - 1))
-    y_p1 = height - 1 - max(0, min(int((p1_val - min_p) / rng * (height - 1)), height - 1))
-    
-    chart[y_p2][0] = "2"
-    chart[y_p1][width - 1] = "1"
-    
-    lines = ["".join(row) for row in chart]
-    lines.append(f"P2: {p2_val:.2f}" + " " * max(1, width - 16) + f"P1: {p1_val:.2f}")
-    return "\n".join(lines)
 
 def analyze_ticker(ticker: str, df_close, df_high, df_low, df_vol):
     """ Przetwarza pojedynczą spółkę i zwraca wynik tabelaryczny oraz ew. raport. """
@@ -97,29 +123,32 @@ def analyze_ticker(ticker: str, df_close, df_high, df_low, df_vol):
     p1_price_val, p2_price_val = None, None
     p1_idx_val, p2_idx_val = None, None
     
-    idx_l, p_l, _ = get_extrema_with_rsi(lows, rsi_dict[7], mode='low')
-    idx_h, p_h, _ = get_extrema_with_rsi(highs, rsi_dict[7], mode='high')
-    
+    dow_pivots = build_strict_dow_pivots(lows, highs, rsi_dict[7], window=WINDOW_PIVOT)
+    pivot_lows = [p for p in dow_pivots if p['type'] == 'L']
+    pivot_highs = [p for p in dow_pivots if p['type'] == 'H']
+    p_l = [p['price'] for p in pivot_lows]
+    p_h = [p['price'] for p in pivot_highs]
+
     for w, rsi_s in rsi_dict.items():
-        # Bycza Dywergencja
-        _, pl_w, rl_w = get_extrema_with_rsi(lows, rsi_s, mode='low')
-        if len(pl_w) >= 2:
-            p2, p1 = pl_w[-2], pl_w[-1]
-            r2, r1 = rl_w[-2], rl_w[-1]
+        # Bycza Dywergencja (na podstawie ostatnich dwóch dołków z sekwencji Dowa)
+        if len(pivot_lows) >= 2:
+            p2_pivot, p1_pivot = pivot_lows[-2], pivot_lows[-1]
+            p2, p1 = p2_pivot['price'], p1_pivot['price']
+            r2, r1 = rsi_s.iloc[p2_pivot['idx']], rsi_s.iloc[p1_pivot['idx']]
             if p1 < p2 and r1 > r2:
                 div_types.append(f"Bycza(RSI{w})")
                 dp_pct = ((p1 - p2) / p2) * 100
                 dr = r1 - r2
                 s_0_values[w] = abs(dp_pct / dr)
                 p1_price_val, p2_price_val = p1, p2
-                p1_idx_val, p2_idx_val = idx_l[-1], idx_l[-2]
-                days_since_p1 = len(prices) - 1 - idx_l[-1]
-                
-        # Niedźwiedzia Dywergencja
-        _, ph_w, rh_w = get_extrema_with_rsi(highs, rsi_s, mode='high')
-        if len(ph_w) >= 2:
-            p2, p1 = ph_w[-2], ph_w[-1]
-            r2, r1 = rh_w[-2], rh_w[-1]
+                p1_idx_val, p2_idx_val = p1_pivot['idx'], p2_pivot['idx']
+                days_since_p1 = len(prices) - 1 - p1_pivot['idx']
+
+        # Niedźwiedzia Dywergencja (na podstawie ostatnich dwóch szczytów z sekwencji Dowa)
+        if len(pivot_highs) >= 2:
+            p2_pivot, p1_pivot = pivot_highs[-2], pivot_highs[-1]
+            p2, p1 = p2_pivot['price'], p1_pivot['price']
+            r2, r1 = rsi_s.iloc[p2_pivot['idx']], rsi_s.iloc[p1_pivot['idx']]
             if p1 > p2 and r1 < r2:
                 div_types.append(f"Niedźwiedzia(RSI{w})")
                 dp_pct = ((p1 - p2) / p2) * 100
@@ -127,8 +156,8 @@ def analyze_ticker(ticker: str, df_close, df_high, df_low, df_vol):
                 s_0_values[w] = -abs(dp_pct / dr)
                 if p1_price_val is None:
                     p1_price_val, p2_price_val = p1, p2
-                    p1_idx_val, p2_idx_val = idx_h[-1], idx_h[-2]
-                    days_since_p1 = len(prices) - 1 - idx_h[-1]
+                    p1_idx_val, p2_idx_val = p1_pivot['idx'], p2_pivot['idx']
+                    days_since_p1 = len(prices) - 1 - p1_pivot['idx']
 
     # Kalkulacja siły S_D z konfiguracji
     w_rsi = sum(RSI_WEIGHTS[w] * s_0_values[w] for w in RSI_WEIGHTS)
@@ -165,7 +194,6 @@ def analyze_ticker(ticker: str, df_close, df_high, df_low, df_vol):
             'days': days_since_p1,
             'change': price_change_from_p1,
             'faza': faza_dowa,
-            'chart': generate_ascii_chart(prices, p2_idx_val, p1_idx_val, p2_price_val, p1_price_val)
         }
         
     return summary_row, detailed_report
