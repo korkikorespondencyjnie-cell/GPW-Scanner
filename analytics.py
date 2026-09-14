@@ -7,6 +7,26 @@ import numpy as np
 import pandas as pd
 from config import RSI_WEIGHTS, HALF_LIFE_DAYS, WINDOW_PIVOT
 
+def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Oblicza Average True Range (ATR) dla pojedynczej spółki (kolumny High, Low, Close)."""
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
+
+def calculate_consolidation_ratio(df: pd.DataFrame, window_len: int = 5, atr_period: int = 14) -> pd.Series:
+    """Kroczący wskaźnik kompresji: (Rolling_Max_High - Rolling_Min_Low) / ATR."""
+    atr = calculate_atr(df, period=atr_period)
+    rolling_max_h = df['High'].rolling(window=window_len).max()
+    rolling_min_l = df['Low'].rolling(window=window_len).min()
+    rolling_range = rolling_max_h - rolling_min_l
+    return rolling_range / atr
+
 def calc_rsi_series(prices: pd.Series, window: int) -> pd.Series:
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
