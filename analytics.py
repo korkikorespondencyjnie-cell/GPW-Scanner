@@ -5,7 +5,7 @@ obliczanie wskaźnika S_D oraz fazy trendu.
 
 import numpy as np
 import pandas as pd
-from config import RSI_WEIGHTS, HALF_LIFE_DAYS, WINDOW_PIVOT
+from config import RSI_WEIGHTS, HALF_LIFE_DAYS, WINDOW_PIVOT, SD_REPORT_THRESHOLD
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Oblicza Average True Range (ATR) dla pojedynczej spółki (kolumny High, Low, Close)."""
@@ -35,24 +35,35 @@ def calc_rsi_series(prices: pd.Series, window: int) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 def get_extrema_with_rsi(high_low_series: pd.Series, rsi_series: pd.Series, mode: str = 'low', window: int = 2):
+    """
+    Wyznacza lokalne ekstremum z otoczeniem RSI.
+    Dla ostatnich `window` świec stosuje wyłącznie lookback – bieżąca świeca
+    może być dołkiem/szczytem bez potwierdzenia kolejnymi barami.
+    """
     extrema_idx, extrema_price, extrema_rsi = [], [], []
     vals = high_low_series.values
     rsi_vals = rsi_series.values
-    
-    for i in range(window, len(vals) - window):
+    n = len(vals)
+
+    for i in range(window, n):
+        if i + window < n:
+            price_slice = vals[i - window : i + window + 1]
+            rsi_slice = rsi_vals[max(0, i - window) : min(n, i + window + 1)]
+        else:
+            price_slice = vals[i - window : i + 1]
+            rsi_slice = rsi_vals[max(0, i - window) : i + 1]
+
         if mode == 'low':
-            if vals[i] == min(vals[i-window : i+window+1]):
+            if vals[i] == min(price_slice):
                 extrema_idx.append(i)
                 extrema_price.append(vals[i])
-                rsi_env = rsi_vals[max(0, i-window) : min(len(rsi_vals), i+window+1)]
-                extrema_rsi.append(np.min(rsi_env))
+                extrema_rsi.append(np.min(rsi_slice))
         elif mode == 'high':
-            if vals[i] == max(vals[i-window : i+window+1]):
+            if vals[i] == max(price_slice):
                 extrema_idx.append(i)
                 extrema_price.append(vals[i])
-                rsi_env = rsi_vals[max(0, i-window) : min(len(rsi_vals), i+window+1)]
-                extrema_rsi.append(np.max(rsi_env))
-                
+                extrema_rsi.append(np.max(rsi_slice))
+
     return extrema_idx, extrema_price, extrema_rsi
 
 def _merge_extrema_to_pivots(idx_l, p_l, rsi_l, idx_h, p_h, rsi_h) -> list:
@@ -107,6 +118,22 @@ def detect_bullish_divergences(pivots: list, rsi_series: pd.Series) -> list:
             })
 
     return divs
+
+def label_dow_pivots(dow_pivots: list, max_per_type: int = 2) -> tuple[dict, list]:
+    """Etykietuje ostatnie N dołków (L1, L2) i szczytów (H1, H2) w kolejności chronologicznej."""
+    recent_lows = [p for p in dow_pivots if p['type'] == 'L'][-max_per_type:]
+    recent_highs = [p for p in dow_pivots if p['type'] == 'H'][-max_per_type:]
+
+    tagged = []
+    for i, p in enumerate(recent_lows, start=1):
+        tagged.append((p['idx'], f'L{i}', p['price']))
+    for i, p in enumerate(recent_highs, start=1):
+        tagged.append((p['idx'], f'H{i}', p['price']))
+
+    tagged.sort(key=lambda x: x[0])
+    labeled = {label: round(price, 2) for _, label, price in tagged}
+    order = [label for _, label, _ in tagged]
+    return labeled, order
 
 def determine_dow_phase(p_l: list, p_h: list, vol_diff_pct: float) -> str:
     if len(p_l) < 2 or len(p_h) < 2:
@@ -194,18 +221,26 @@ def analyze_ticker(ticker: str, df_close, df_high, df_low, df_vol):
     faza_dowa = determine_dow_phase(p_l, p_h, vol_diff_pct)
     ticker_clean = ticker.replace('.WA', '')
 
+    labeled_pivots, pivot_order = label_dow_pivots(dow_pivots)
+    ohlc = pd.DataFrame({'High': highs, 'Low': lows, 'Close': prices})
+    cons_ratio = calculate_consolidation_ratio(ohlc).iloc[-1]
+    cons_ratio_val = round(cons_ratio, 3) if pd.notna(cons_ratio) else None
+
     summary_row = {
         'Ticker': ticker_clean,
         'Cena': round(current_price, 2),
         'S_D': round(s_d, 4),
+        'Kompresja Ratio': cons_ratio_val,
         'Zmiana od P1 %': round(price_change_from_p1, 2),
         'Faza Dowa': faza_dowa,
         'Dywergencje': ", ".join(set(div_types)) if div_types else "Brak",
-        'Vol Diff %': round(vol_diff_pct, 1)
+        'Vol Diff %': round(vol_diff_pct, 1),
     }
-    
+    for label in pivot_order:
+        summary_row[label] = labeled_pivots[label]
+
     detailed_report = None
-    if abs(s_d) > 0.5 and p1_idx_val is not None and p2_idx_val is not None:
+    if abs(s_d) > SD_REPORT_THRESHOLD and p1_idx_val is not None and p2_idx_val is not None:
         detailed_report = {
             'ticker': ticker_clean,
             'sd': s_d,
@@ -214,6 +249,9 @@ def analyze_ticker(ticker: str, df_close, df_high, df_low, df_vol):
             'days': days_since_p1,
             'change': price_change_from_p1,
             'faza': faza_dowa,
+            'kompresja_ratio': cons_ratio_val,
+            'pivoty': labeled_pivots,
+            'pivot_order': pivot_order,
         }
         
     return summary_row, detailed_report

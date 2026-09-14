@@ -26,8 +26,13 @@ def main():
 
     df_res = pd.DataFrame(results).sort_values(by='S_D', ascending=False)
 
+    base_cols = ['Ticker', 'Cena', 'S_D', 'Kompresja Ratio', 'Zmiana od P1 %',
+                 'Faza Dowa', 'Dywergencje', 'Vol Diff %']
+    pivot_cols = [c for c in ('L1', 'H1', 'L2', 'H2') if c in df_res.columns]
+    df_res = df_res[base_cols + pivot_cols]
+
     print("\n" + "="*110)
-    print(" TABELA GŁÓWNA: ANALIZA DYWERGENCJI I FAZY TRENDU DOWA")
+    print(" TABELA GŁÓWNA: DYWERGENCJE, OSTATNIE PIVOTY DOWA (L1/H1/L2/H2) I KOMPRESJA")
     print("="*110)
     print(df_res.to_string(index=False))
 
@@ -40,7 +45,12 @@ def main():
     else:
         for rep in reports:
             print(f"\n--- RAPORT SZCZEGÓŁOWY: {rep['ticker']} (S_D = {rep['sd']:.4f}) ---")
+            pivot_line = " | ".join(
+                f"{label}: {rep['pivoty'][label]:.2f}" for label in rep['pivot_order']
+            )
+            print(f" • Pivoty Dowa: {pivot_line}")
             print(f" • Punkt Zwrotny P2: {rep['p2']:.2f} PLN | P1: {rep['p1']:.2f} PLN")
+            print(f" • Kompresja Ratio (ostatnia świeca): {rep['kompresja_ratio']}")
             print(f" • Czas od P1: {rep['days']} sesji | Zmiana ceny od P1: {rep['change']:+.2f}%")
             print(f" • Faza Dowa: {rep['faza']}")
             print("-" * 60)
