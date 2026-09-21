@@ -9,3 +9,4 @@ env/
 tests/last_consolidation_tickers.csv
 tests/last_consolidation_summary.csv
 tests/last_backtest_results.csv
+tests/last_divergences.csv

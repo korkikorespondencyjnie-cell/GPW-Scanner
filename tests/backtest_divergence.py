@@ -26,26 +26,26 @@ RESULTS_CSV = Path(__file__).resolve().parent / 'last_backtest_results.csv'
 
 def calculate_swing_metrics_to_first_pivot(divs, pivots, dates_index):
     """
-    Oblicza zasięg swingu do najbliższego pierwszego ekstremum po P1
+    Oblicza zasięg swingu do najbliższego pierwszego ekstremum po P2
     oraz prostą rentowność w skali roku (Annualized ROR).
     """
     gains = []
     annualized_rors = []
 
     for d in divs:
-        p1_idx = d['p1_idx']
-        next_pivots = [p for p in pivots if p['idx'] > p1_idx]
+        p2_idx = d['p2_idx']
+        next_pivots = [p for p in pivots if p['idx'] > p2_idx]
         if not next_pivots:
             continue
 
         target_pivot = next_pivots[0]
-        price_entry = d['p1_price']
+        price_entry = d['p2_price']
         price_exit = target_pivot['price']
         gain_pct = ((price_exit - price_entry) / price_entry) * 100
 
-        p1_date = dates_index[p1_idx]
+        p2_date = dates_index[p2_idx]
         exit_date = dates_index[target_pivot['idx']]
-        days_held = max(1, (exit_date - p1_date).days)
+        days_held = max(1, (exit_date - p2_date).days)
         annualized_ror = gain_pct * (365.0 / days_held)
 
         gains.append(gain_pct)
